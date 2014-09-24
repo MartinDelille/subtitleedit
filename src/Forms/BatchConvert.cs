@@ -9,6 +9,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Nikse.SubtitleEdit.Forms
@@ -528,15 +529,8 @@ namespace Nikse.SubtitleEdit.Forms
             _errors = 0;
             _abort = false;
 
-            BackgroundWorker worker1 = new BackgroundWorker();
-            BackgroundWorker worker2 = new BackgroundWorker();
-            BackgroundWorker worker3 = new BackgroundWorker();
-            worker1.DoWork += DoThreadWork;
-            worker1.RunWorkerCompleted += ThreadWorkerCompleted;
-            worker2.DoWork += DoThreadWork;
-            worker2.RunWorkerCompleted += ThreadWorkerCompleted;
-            worker3.DoWork += DoThreadWork;
-            worker3.RunWorkerCompleted += ThreadWorkerCompleted;
+            var tasks = new List<Task>();
+            var uiContext = TaskScheduler.FromCurrentSynchronizationContext();
 
             listViewInputFiles.BeginUpdate();
             foreach (ListViewItem item in listViewInputFiles.Items)
@@ -845,19 +839,17 @@ namespace Nikse.SubtitleEdit.Forms
                             sub.AddTimeToAllParagraphs(TimeSpan.FromMilliseconds(totalMilliseconds));
                         }
 
-                        while (worker1.IsBusy && worker2.IsBusy && worker3.IsBusy)
-                        {
-                            Application.DoEvents();
-                            System.Threading.Thread.Sleep(100);
-                        }
-
                         ThreadDoWorkParameter parameter = new ThreadDoWorkParameter(checkBoxFixCommonErrors.Checked, checkBoxMultipleReplace.Checked, checkBoxSplitLongLines.Checked, checkBoxAutoBalance.Checked, checkBoxSetMinimumDisplayTimeBetweenSubs.Checked, item, sub, GetCurrentSubtitleFormat(), GetCurrentEncoding(), Configuration.Settings.Tools.BatchConvertLanguage, fileName, toFormat, format);
-                        if (!worker1.IsBusy)
-                            worker1.RunWorkerAsync(parameter);
-                        else if (!worker2.IsBusy)
-                            worker2.RunWorkerAsync(parameter);
-                        else if (!worker3.IsBusy)
-                            worker3.RunWorkerAsync(parameter);
+                        var task = Task<ThreadDoWorkParameter>.Factory.StartNew(() =>
+                        {
+                            DoThreadWork(this, new DoWorkEventArgs(parameter));
+                            return parameter;
+                        });
+                        task.ContinueWith(originalTask =>
+                        {
+                            ThreadWorkerCompleted(this, new RunWorkerCompletedEventArgs(originalTask.Result, null, false));
+                        }, uiContext);
+                        tasks.Add(task);
                     }
 
                 }
@@ -869,26 +861,18 @@ namespace Nikse.SubtitleEdit.Forms
                 }
                 index++;
             }
-            while (worker1.IsBusy || worker2.IsBusy || worker3.IsBusy)
+            Task.Factory.ContinueWhenAll(tasks.ToArray(), completedTasks =>
             {
-                try
-                {
-                    Application.DoEvents();
-                }
-                catch
-                {
-                }
-                System.Threading.Thread.Sleep(100);
-            }
-            _converting = false;
-            labelStatus.Text = string.Empty;
-            progressBar1.Visible = false;
-            buttonConvert.Enabled = true;
-            buttonCancel.Enabled = true;
-            groupBoxOutput.Enabled = true;
-            groupBoxConvertOptions.Enabled = true;
-            buttonInputBrowse.Enabled = true;
-            buttonSearchFolder.Enabled = true;
+                _converting = false;
+                labelStatus.Text = string.Empty;
+                progressBar1.Visible = false;
+                buttonConvert.Enabled = true;
+                buttonCancel.Enabled = true;
+                groupBoxOutput.Enabled = true;
+                groupBoxConvertOptions.Enabled = true;
+                buttonInputBrowse.Enabled = true;
+                buttonSearchFolder.Enabled = true;
+            }, System.Threading.CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, uiContext);
         }
 
         private void MatroskaProgress(long position, long total)
