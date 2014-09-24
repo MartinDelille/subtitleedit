@@ -16,7 +16,7 @@ namespace Nikse.SubtitleEdit.Forms
 {
     public sealed partial class BatchConvert : Form
     {
-        public class ThreadDoWorkParameter
+        private class BatchState
         {
             public bool FixCommonErrors { get; set; }
             public bool MultipleReplaceActive { get; set; }
@@ -33,7 +33,7 @@ namespace Nikse.SubtitleEdit.Forms
             public string ToFormat { get; set; }
             public SubtitleFormat SourceFormat { get; set; }
 
-            public ThreadDoWorkParameter(bool fixCommonErrors, bool multipleReplace, bool splitLongLinesActive, bool autoBalance, bool setMinDisplayTimeBetweenSubtitles, ListViewItem item, Subtitle subtitle, SubtitleFormat format, Encoding encoding, string language, string fileName, string toFormat, SubtitleFormat sourceFormat)
+            public BatchState(bool fixCommonErrors, bool multipleReplace, bool splitLongLinesActive, bool autoBalance, bool setMinDisplayTimeBetweenSubtitles, ListViewItem item, Subtitle subtitle, SubtitleFormat format, Encoding encoding, string language, string fileName, string toFormat, SubtitleFormat sourceFormat)
             {
                 FixCommonErrors = fixCommonErrors;
                 MultipleReplaceActive = multipleReplace;
@@ -839,19 +839,11 @@ namespace Nikse.SubtitleEdit.Forms
                             sub.AddTimeToAllParagraphs(TimeSpan.FromMilliseconds(totalMilliseconds));
                         }
 
-                        ThreadDoWorkParameter parameter = new ThreadDoWorkParameter(checkBoxFixCommonErrors.Checked, checkBoxMultipleReplace.Checked, checkBoxSplitLongLines.Checked, checkBoxAutoBalance.Checked, checkBoxSetMinimumDisplayTimeBetweenSubs.Checked, item, sub, GetCurrentSubtitleFormat(), GetCurrentEncoding(), Configuration.Settings.Tools.BatchConvertLanguage, fileName, toFormat, format);
-                        var task = Task<ThreadDoWorkParameter>.Factory.StartNew(() =>
-                        {
-                            DoThreadWork(this, new DoWorkEventArgs(parameter));
-                            return parameter;
-                        });
-                        task.ContinueWith(originalTask =>
-                        {
-                            ThreadWorkerCompleted(this, new RunWorkerCompletedEventArgs(originalTask.Result, null, false));
-                        }, uiContext);
+                        var state = new BatchState(checkBoxFixCommonErrors.Checked, checkBoxMultipleReplace.Checked, checkBoxSplitLongLines.Checked, checkBoxAutoBalance.Checked, checkBoxSetMinimumDisplayTimeBetweenSubs.Checked, item, sub, GetCurrentSubtitleFormat(), GetCurrentEncoding(), Configuration.Settings.Tools.BatchConvertLanguage, fileName, toFormat, format);
+                        var task = Task<BatchState>.Factory.StartNew(() => StartBatch(state));
+                        task.ContinueWith(originalTask => EndBatch(originalTask.Result), uiContext);
                         tasks.Add(task);
                     }
-
                 }
                 catch
                 {
@@ -861,6 +853,7 @@ namespace Nikse.SubtitleEdit.Forms
                 }
                 index++;
             }
+
             Task.Factory.ContinueWhenAll(tasks.ToArray(), completedTasks =>
             {
                 _converting = false;
@@ -882,109 +875,107 @@ namespace Nikse.SubtitleEdit.Forms
                 Application.DoEvents();
         }
 
-        private void DoThreadWork(object sender, DoWorkEventArgs e)
+        private static BatchState StartBatch(BatchState state)
         {
-            ThreadDoWorkParameter p = (ThreadDoWorkParameter)e.Argument;
-            if (p.FixCommonErrors)
+            if (state.FixCommonErrors)
             {
                 try
                 {
                     var fixCommonErrors = new FixCommonErrors();
-                    fixCommonErrors.RunBatch(p.Subtitle, p.Format, p.Encoding, Configuration.Settings.Tools.BatchConvertLanguage);
-                    p.Subtitle = fixCommonErrors.FixedSubtitle;
+                    fixCommonErrors.RunBatch(state.Subtitle, state.Format, state.Encoding, Configuration.Settings.Tools.BatchConvertLanguage);
+                    state.Subtitle = fixCommonErrors.FixedSubtitle;
 
                     fixCommonErrors = new FixCommonErrors();
-                    fixCommonErrors.RunBatch(p.Subtitle, p.Format, p.Encoding, Configuration.Settings.Tools.BatchConvertLanguage);
-                    p.Subtitle = fixCommonErrors.FixedSubtitle;
+                    fixCommonErrors.RunBatch(state.Subtitle, state.Format, state.Encoding, Configuration.Settings.Tools.BatchConvertLanguage);
+                    state.Subtitle = fixCommonErrors.FixedSubtitle;
                 }
                 catch (Exception exception)
                 {
-                    p.Error = "FCE ERROR: " + exception.Message;
+                    state.Error = "FCE ERROR: " + exception.Message;
                 }
             }
-            if (p.MultipleReplaceActive)
+            if (state.MultipleReplaceActive)
             {
                 try
                 {
                     var form = new MultipleReplace();
-                    form.Initialize(p.Subtitle);
-                    p.Subtitle = form.FixedSubtitle;
+                    form.Initialize(state.Subtitle);
+                    state.Subtitle = form.FixedSubtitle;
                 }
                 catch (Exception exception)
                 {
-                    p.Error = "MultipleReplace error: " + exception.Message;
+                    state.Error = "MultipleReplace error: " + exception.Message;
                 }
             }
-            if (p.SplitLongLinesActive)
+            if (state.SplitLongLinesActive)
             {
                 try
                 {
-                    p.Subtitle = Logic.Forms.SplitLongLinesHelper.SplitLongLinesInSubtitle(p.Subtitle, Configuration.Settings.General.SubtitleLineMaximumLength * 2, Configuration.Settings.General.SubtitleLineMaximumLength);
+                    state.Subtitle = Logic.Forms.SplitLongLinesHelper.SplitLongLinesInSubtitle(state.Subtitle, Configuration.Settings.General.SubtitleLineMaximumLength * 2, Configuration.Settings.General.SubtitleLineMaximumLength);
                 }
                 catch (Exception exception)
                 {
-                    p.Error = "AutoBalance error: " + exception.Message;
+                    state.Error = "AutoBalance error: " + exception.Message;
                 }
             }
-            if (p.AutoBalanceActive)
+            if (state.AutoBalanceActive)
             {
                 try
                 {
-                    foreach (Paragraph paragraph in p.Subtitle.Paragraphs)
+                    foreach (Paragraph paragraph in state.Subtitle.Paragraphs)
                         paragraph.Text = Utilities.AutoBreakLine(paragraph.Text);
                 }
                 catch (Exception exception)
                 {
-                    p.Error = "AutoBalance error: " + exception.Message;
+                    state.Error = "AutoBalance error: " + exception.Message;
                 }
             }
-            if (p.SetMinDisplayTimeBetweenSubtitles)
+            if (state.SetMinDisplayTimeBetweenSubtitles)
             {
                 double minumumMillisecondsBetweenLines = Configuration.Settings.General.MininumMillisecondsBetweenLines;
-                for (int i = 0; i < p.Subtitle.Paragraphs.Count - 1; i++)
+                for (int i = 0; i < state.Subtitle.Paragraphs.Count - 1; i++)
                 {
-                    Paragraph current = p.Subtitle.GetParagraphOrDefault(i);
-                    Paragraph next = p.Subtitle.GetParagraphOrDefault(i + 1);
+                    Paragraph current = state.Subtitle.GetParagraphOrDefault(i);
+                    Paragraph next = state.Subtitle.GetParagraphOrDefault(i + 1);
                     if (next.StartTime.TotalMilliseconds - current.EndTime.TotalMilliseconds < minumumMillisecondsBetweenLines)
                         current.EndTime.TotalMilliseconds = next.StartTime.TotalMilliseconds - minumumMillisecondsBetweenLines;
                 }
             }
-            e.Result = p;
+            return state;
         }
 
-        private void ThreadWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        private void EndBatch(BatchState state)
         {
-            var p = (ThreadDoWorkParameter)e.Result;
-            if (p.Item.Index + 2 < listViewInputFiles.Items.Count)
-                listViewInputFiles.EnsureVisible(p.Item.Index + 2);
+            if (state.Item.Index + 2 < listViewInputFiles.Items.Count)
+                listViewInputFiles.EnsureVisible(state.Item.Index + 2);
             else
-                listViewInputFiles.EnsureVisible(p.Item.Index);
+                listViewInputFiles.EnsureVisible(state.Item.Index);
 
-            if (!string.IsNullOrEmpty(p.Error))
+            if (!string.IsNullOrEmpty(state.Error))
             {
-                p.Item.SubItems[3].Text = p.Error;
+                state.Item.SubItems[3].Text = state.Error;
             }
             else
             {
-                if (p.SourceFormat == null)
-                    p.SourceFormat = new SubRip();
+                if (state.SourceFormat == null)
+                    state.SourceFormat = new SubRip();
                 bool success;
                 if (checkBoxOverwriteOriginalFiles.Checked)
                 {
-                    success = Main.BatchConvertSave(p.ToFormat, null, GetCurrentEncoding(), Path.GetDirectoryName(p.FileName), _count, ref _converted, ref _errors, _allFormats, p.FileName, p.Subtitle, p.SourceFormat, true, string.Empty);
+                    success = Main.BatchConvertSave(state.ToFormat, null, GetCurrentEncoding(), Path.GetDirectoryName(state.FileName), _count, ref _converted, ref _errors, _allFormats, state.FileName, state.Subtitle, state.SourceFormat, true, string.Empty);
                 }
                 else
                 {
-                    success = Main.BatchConvertSave(p.ToFormat, null, GetCurrentEncoding(), textBoxOutputFolder.Text, _count, ref _converted, ref _errors, _allFormats, p.FileName, p.Subtitle, p.SourceFormat, checkBoxOverwrite.Checked, string.Empty);
+                    success = Main.BatchConvertSave(state.ToFormat, null, GetCurrentEncoding(), textBoxOutputFolder.Text, _count, ref _converted, ref _errors, _allFormats, state.FileName, state.Subtitle, state.SourceFormat, checkBoxOverwrite.Checked, string.Empty);
                 }
 
                 if (success)
                 {
-                    p.Item.SubItems[3].Text = Configuration.Settings.Language.BatchConvert.Converted;
+                    state.Item.SubItems[3].Text = Configuration.Settings.Language.BatchConvert.Converted;
                 }
                 else
                 {
-                    p.Item.SubItems[3].Text = "ERROR";
+                    state.Item.SubItems[3].Text = "ERROR";
                 }
                 if (progressBar1.Value < progressBar1.Maximum)
                     progressBar1.Value++;
