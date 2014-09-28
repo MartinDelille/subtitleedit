@@ -1,6 +1,6 @@
 ﻿Subtitle Edit Changelog
 
-
+asdfasf
 3.4.3 (xth October 2014)
 * NEW:
    Added Thai translation - thx Bonfelder Straße
