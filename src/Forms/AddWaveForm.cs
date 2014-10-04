@@ -244,30 +244,36 @@ namespace Nikse.SubtitleEdit.Forms
             {
                 if (labelVideoFileName.Text.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase))
                 { // Choose for number of audio tracks in matroska files
+                    Matroska mkv = null;
                     try
                     {
-                        using (var mkv = new Matroska(labelVideoFileName.Text))
+                        mkv = new Matroska(labelVideoFileName.Text);
+                        if (mkv.IsValid)
                         {
-                            if (mkv.IsValid)
+                            var trackInfo = mkv.GetTrackInfo();
+                            foreach (var ti in trackInfo)
                             {
-                                var trackInfo = mkv.GetTrackInfo();
-                                foreach (var ti in trackInfo)
+                                if (ti.IsAudio)
                                 {
-                                    if (ti.IsAudio)
-                                    {
-                                        numberOfAudioTracks++;
-                                        if (ti.CodecId != null && ti.Language != null)
-                                            audioTrackNames.Add("#" + ti.TrackNumber + ": " + ti.CodecId.Replace("\0", string.Empty) + " - " + ti.Language.Replace("\0", string.Empty));
-                                        else
-                                            audioTrackNames.Add("#" + ti.TrackNumber);
-                                        mkvAudioTrackNumbers.Add(mkvAudioTrackNumbers.Count, ti.TrackNumber);
-                                    }
+                                    numberOfAudioTracks++;
+                                    if (ti.CodecId != null && ti.Language != null)
+                                        audioTrackNames.Add("#" + ti.TrackNumber + ": " + ti.CodecId.Replace("\0", string.Empty) + " - " + ti.Language.Replace("\0", string.Empty));
+                                    else
+                                        audioTrackNames.Add("#" + ti.TrackNumber);
+                                    mkvAudioTrackNumbers.Add(mkvAudioTrackNumbers.Count, ti.TrackNumber);
                                 }
                             }
                         }
                     }
                     catch
                     {
+                    }
+                    finally
+                    {
+                        if (mkv != null)
+                        {
+                            mkv.Dispose();
+                        }
                     }
                 }
                 else if (labelVideoFileName.Text.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) || labelVideoFileName.Text.EndsWith(".m4v", StringComparison.OrdinalIgnoreCase))
@@ -320,19 +326,25 @@ namespace Nikse.SubtitleEdit.Forms
                 // check for delay in matroska files
                 if (labelVideoFileName.Text.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase))
                 {
+                    Matroska mkv = null;
                     try
                     {
-                        using (var mkv = new Matroska(labelVideoFileName.Text))
+                        mkv = new Matroska(labelVideoFileName.Text);
+                        if (mkv.IsValid)
                         {
-                            if (mkv.IsValid)
-                            {
-                                _delayInMilliseconds = (int)mkv.GetTrackStartTime(mkvAudioTrackNumbers[_audioTrackNumber]);
-                            }
+                            _delayInMilliseconds = (int)mkv.GetTrackStartTime(mkvAudioTrackNumbers[_audioTrackNumber]);
                         }
                     }
                     catch
                     {
                         _delayInMilliseconds = 0;
+                    }
+                    finally
+                    {
+                        if (mkv != null)
+                        {
+                            mkv.Dispose();
+                        }
                     }
                 }
 
