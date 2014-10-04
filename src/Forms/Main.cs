@@ -766,7 +766,7 @@ namespace Nikse.SubtitleEdit.Forms
                                             }
                                             else
                                             {
-                                                LoadMatroskaSubtitle(x, fileName, true);
+                                                LoadMatroskaSubtitle(x, mkv, true);
                                                 sub = _subtitle;
                                                 format = GetCurrentSubtitleFormat();
                                                 string newFileName = fileName;
@@ -2288,7 +2288,7 @@ namespace Nikse.SubtitleEdit.Forms
                             string videoCodec;
                             mkv.GetMatroskaInfo(out hasConstantFrameRate, out frameRate, out width, out height, out milliseconds, out videoCodec);
 
-                            ImportSubtitleFromMatroskaFile(fileName);
+                            ImportSubtitleFromMatroskaFile(mkv);
                             return;
                         }
                     }
@@ -8979,52 +8979,52 @@ namespace Nikse.SubtitleEdit.Forms
             if (openFileDialog1.ShowDialog(this) == DialogResult.OK)
             {
                 openFileDialog1.InitialDirectory = Path.GetDirectoryName(openFileDialog1.FileName);
-                ImportSubtitleFromMatroskaFile(openFileDialog1.FileName);
+                using (var matroska = new Matroska(openFileDialog1.FileName))
+                {
+                    if (!matroska.IsValid)
+                    {
+                        MessageBox.Show(string.Format(_language.NotAValidMatroskaFileX, openFileDialog1.FileName));
+                        return;
+                    }
+
+                    ImportSubtitleFromMatroskaFile(matroska);
+                }
             }
         }
 
-        private void ImportSubtitleFromMatroskaFile(string fileName)
+        private void ImportSubtitleFromMatroskaFile(Matroska matroska)
         {
-            using (var matroska = new Matroska(fileName))
+            var subtitleList = matroska.GetMatroskaSubtitleTracks();
+            if (subtitleList.Count == 0)
             {
-                if (!matroska.IsValid)
-                {
-                    MessageBox.Show(string.Format(_language.NotAValidMatroskaFileX, fileName));
-                    return;
-                }
+                MessageBox.Show(_language.NoSubtitlesFound);
+                return;
+            }
 
-                var subtitleList = matroska.GetMatroskaSubtitleTracks();
-                if (subtitleList.Count == 0)
+            if (ContinueNewOrExit())
+            {
+                if (subtitleList.Count > 1)
                 {
-                    MessageBox.Show(_language.NoSubtitlesFound);
-                    return;
+                    MatroskaSubtitleChooser subtitleChooser = new MatroskaSubtitleChooser();
+                    subtitleChooser.Initialize(subtitleList);
+                    if (_loading)
+                    {
+                        subtitleChooser.Icon = (Icon)this.Icon.Clone();
+                        subtitleChooser.ShowInTaskbar = true;
+                        subtitleChooser.ShowIcon = true;
+                    }
+                    if (subtitleChooser.ShowDialog(this) == DialogResult.OK)
+                    {
+                        LoadMatroskaSubtitle(subtitleList[subtitleChooser.SelectedIndex], matroska, false);
+                        if (Path.GetExtension(matroska.FileName).Equals(".mkv", StringComparison.OrdinalIgnoreCase))
+                            OpenVideo(matroska.FileName);
+                    }
                 }
-                
-                if (ContinueNewOrExit())
+                else
                 {
-                    if (subtitleList.Count > 1)
-                    {
-                        MatroskaSubtitleChooser subtitleChooser = new MatroskaSubtitleChooser();
-                        subtitleChooser.Initialize(subtitleList);
-                        if (_loading)
-                        {
-                            subtitleChooser.Icon = (Icon)this.Icon.Clone();
-                            subtitleChooser.ShowInTaskbar = true;
-                            subtitleChooser.ShowIcon = true;
-                        }
-                        if (subtitleChooser.ShowDialog(this) == DialogResult.OK)
-                        {
-                            LoadMatroskaSubtitle(subtitleList[subtitleChooser.SelectedIndex], fileName, false);
-                            if (Path.GetExtension(fileName).Equals(".mkv", StringComparison.OrdinalIgnoreCase))
-                                OpenVideo(fileName);
-                        }
-                    }
-                    else
-                    {
-                        LoadMatroskaSubtitle(subtitleList[0], fileName, false);
-                        if (Path.GetExtension(fileName).Equals(".mkv", StringComparison.OrdinalIgnoreCase))
-                            OpenVideo(fileName);
-                    }
+                    LoadMatroskaSubtitle(subtitleList[0], matroska, false);
+                    if (Path.GetExtension(matroska.FileName).Equals(".mkv", StringComparison.OrdinalIgnoreCase))
+                        OpenVideo(matroska.FileName);
                 }
             }
         }
@@ -9091,150 +9091,142 @@ namespace Nikse.SubtitleEdit.Forms
             return subtitle;
         }
 
-        internal void LoadMatroskaSubtitle(MatroskaSubtitleInfo matroskaSubtitleInfo, string fileName, bool batchMode)
+        internal void LoadMatroskaSubtitle(MatroskaSubtitleInfo matroskaSubtitleInfo, Matroska matroska, bool batchMode)
         {
             if (matroskaSubtitleInfo.CodecId.Equals("S_VOBSUB", StringComparison.OrdinalIgnoreCase))
             {
                 if (batchMode)
                     return;
-                LoadVobSubFromMatroska(matroskaSubtitleInfo, fileName);
+                LoadVobSubFromMatroska(matroskaSubtitleInfo, matroska);
                 return;
             }
             if (matroskaSubtitleInfo.CodecId.Equals("S_HDMV/PGS", StringComparison.OrdinalIgnoreCase))
             {
                 if (batchMode)
                     return;
-                LoadBluRaySubFromMatroska(matroskaSubtitleInfo, fileName);
+                LoadBluRaySubFromMatroska(matroskaSubtitleInfo, matroska);
                 return;
             }
 
-            using (var matroska = new Matroska(fileName))
+            ShowStatus(_language.ParsingMatroskaFile);
+            Refresh();
+            Cursor.Current = Cursors.WaitCursor;
+            var sub = matroska.GetMatroskaSubtitle((int)matroskaSubtitleInfo.TrackNumber, MatroskaProgress);
+            Cursor.Current = Cursors.Default;
+
+            MakeHistoryForUndo(_language.BeforeImportFromMatroskaFile);
+            _subtitleListViewIndex = -1;
+            if (!batchMode)
+                ResetSubtitle();
+            _subtitle.Paragraphs.Clear();
+
+            SubtitleFormat format;
+            var isSsa = false;
+            if (matroskaSubtitleInfo.CodecPrivate.Contains("[script info]", StringComparison.OrdinalIgnoreCase))
             {
-                if (!matroska.IsValid)
-                {
-                    return;
-                }
-
-                ShowStatus(_language.ParsingMatroskaFile);
-                Refresh();
-                Cursor.Current = Cursors.WaitCursor;
-                var sub = matroska.GetMatroskaSubtitle((int)matroskaSubtitleInfo.TrackNumber, MatroskaProgress);
-                Cursor.Current = Cursors.Default;
-
-                MakeHistoryForUndo(_language.BeforeImportFromMatroskaFile);
-                _subtitleListViewIndex = -1;
-                if (!batchMode)
-                    ResetSubtitle();
-                _subtitle.Paragraphs.Clear();
-
-                SubtitleFormat format;
-                var isSsa = false;
-                if (matroskaSubtitleInfo.CodecPrivate.Contains("[script info]", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (matroskaSubtitleInfo.CodecPrivate.Contains("[V4 Styles]", StringComparison.OrdinalIgnoreCase))
-                        format = new SubStationAlpha();
-                    else
-                        format = new AdvancedSubStationAlpha();
-                    isSsa = true;
-                    if (_networkSession == null)
-                    {
-                        SubtitleListview1.ShowExtraColumn(Configuration.Settings.Language.General.Style);
-                        SubtitleListview1.DisplayExtraFromExtra = true;
-                    }
-                }
+                if (matroskaSubtitleInfo.CodecPrivate.Contains("[V4 Styles]", StringComparison.OrdinalIgnoreCase))
+                    format = new SubStationAlpha();
                 else
+                    format = new AdvancedSubStationAlpha();
+                isSsa = true;
+                if (_networkSession == null)
                 {
-                    format = new SubRip();
-                    if (_networkSession == null && SubtitleListview1.IsExtraColumnVisible)
-                        SubtitleListview1.HideExtraColumn();
+                    SubtitleListview1.ShowExtraColumn(Configuration.Settings.Language.General.Style);
+                    SubtitleListview1.DisplayExtraFromExtra = true;
                 }
-
-                comboBoxSubtitleFormats.SelectedIndexChanged -= ComboBoxSubtitleFormatsSelectedIndexChanged;
-                SetCurrentFormat(format);
-                comboBoxSubtitleFormats.SelectedIndexChanged += ComboBoxSubtitleFormatsSelectedIndexChanged;
-
-                if (isSsa)
-                {
-                    foreach (Paragraph p in LoadMatroskaSSA(matroskaSubtitleInfo, fileName, format, sub).Paragraphs)
-                    {
-                        _subtitle.Paragraphs.Add(p);
-                    }
-
-                    if (!string.IsNullOrEmpty(matroskaSubtitleInfo.CodecPrivate))
-                    {
-                        bool eventsStarted = false;
-                        bool fontsStarted = false;
-                        bool graphicsStarted = false;
-                        var header = new StringBuilder();
-                        foreach (string line in matroskaSubtitleInfo.CodecPrivate.Replace(Environment.NewLine, "\n").Split('\n'))
-                        {
-                            if (!eventsStarted && !fontsStarted && !graphicsStarted)
-                            {
-                                header.AppendLine(line);
-                            }
-
-                            if (line.TrimStart().StartsWith("dialog:", StringComparison.OrdinalIgnoreCase))
-                            {
-                                eventsStarted = true;
-                                fontsStarted = false;
-                                graphicsStarted = false;
-                            }
-                            else if (line.Trim().Equals("[events]", StringComparison.OrdinalIgnoreCase))
-                            {
-                                eventsStarted = true;
-                                fontsStarted = false;
-                                graphicsStarted = false;
-                            }
-                            else if (line.Trim().Equals("[fonts]", StringComparison.OrdinalIgnoreCase))
-                            {
-                                eventsStarted = false;
-                                fontsStarted = true;
-                                graphicsStarted = false;
-                            }
-                            else if (line.Trim().Equals("[graphics]", StringComparison.OrdinalIgnoreCase))
-                            {
-                                eventsStarted = false;
-                                fontsStarted = false;
-                                graphicsStarted = true;
-                            }
-                        }
-                        _subtitle.Header = header.ToString();
-                    }
-                }
-                else
-                {
-                    foreach (SubtitleSequence p in sub)
-                    {
-                        _subtitle.Paragraphs.Add(new Paragraph(p.Text, p.StartMilliseconds, p.EndMilliseconds));
-                    }
-                }
-
-                SetEncoding(Encoding.UTF8);
-                ShowStatus(_language.SubtitleImportedFromMatroskaFile);
-                _subtitle.Renumber(1);
-                _subtitle.WasLoadedWithFrameNumbers = false;
-                if (fileName.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".mks", StringComparison.OrdinalIgnoreCase))
-                {
-                    _fileName = fileName.Substring(0, fileName.Length - 4);
-                    Text = Title + " - " + _fileName;
-                }
-                else
-                {
-                    Text = Title;
-                }
-                _fileDateTime = new DateTime();
-
-                _converted = true;
-
-                if (batchMode)
-                    return;
-
-                SubtitleListview1.Fill(_subtitle, _subtitleAlternate);
-                if (_subtitle.Paragraphs.Count > 0)
-                    SubtitleListview1.SelectIndexAndEnsureVisible(0);
-
-                ShowSource();
             }
+            else
+            {
+                format = new SubRip();
+                if (_networkSession == null && SubtitleListview1.IsExtraColumnVisible)
+                    SubtitleListview1.HideExtraColumn();
+            }
+
+            comboBoxSubtitleFormats.SelectedIndexChanged -= ComboBoxSubtitleFormatsSelectedIndexChanged;
+            SetCurrentFormat(format);
+            comboBoxSubtitleFormats.SelectedIndexChanged += ComboBoxSubtitleFormatsSelectedIndexChanged;
+
+            if (isSsa)
+            {
+                foreach (Paragraph p in LoadMatroskaSSA(matroskaSubtitleInfo, matroska.FileName, format, sub).Paragraphs)
+                {
+                    _subtitle.Paragraphs.Add(p);
+                }
+
+                if (!string.IsNullOrEmpty(matroskaSubtitleInfo.CodecPrivate))
+                {
+                    bool eventsStarted = false;
+                    bool fontsStarted = false;
+                    bool graphicsStarted = false;
+                    var header = new StringBuilder();
+                    foreach (string line in matroskaSubtitleInfo.CodecPrivate.Replace(Environment.NewLine, "\n").Split('\n'))
+                    {
+                        if (!eventsStarted && !fontsStarted && !graphicsStarted)
+                        {
+                            header.AppendLine(line);
+                        }
+
+                        if (line.TrimStart().StartsWith("dialog:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            eventsStarted = true;
+                            fontsStarted = false;
+                            graphicsStarted = false;
+                        }
+                        else if (line.Trim().Equals("[events]", StringComparison.OrdinalIgnoreCase))
+                        {
+                            eventsStarted = true;
+                            fontsStarted = false;
+                            graphicsStarted = false;
+                        }
+                        else if (line.Trim().Equals("[fonts]", StringComparison.OrdinalIgnoreCase))
+                        {
+                            eventsStarted = false;
+                            fontsStarted = true;
+                            graphicsStarted = false;
+                        }
+                        else if (line.Trim().Equals("[graphics]", StringComparison.OrdinalIgnoreCase))
+                        {
+                            eventsStarted = false;
+                            fontsStarted = false;
+                            graphicsStarted = true;
+                        }
+                    }
+                    _subtitle.Header = header.ToString();
+                }
+            }
+            else
+            {
+                foreach (SubtitleSequence p in sub)
+                {
+                    _subtitle.Paragraphs.Add(new Paragraph(p.Text, p.StartMilliseconds, p.EndMilliseconds));
+                }
+            }
+
+            SetEncoding(Encoding.UTF8);
+            ShowStatus(_language.SubtitleImportedFromMatroskaFile);
+            _subtitle.Renumber(1);
+            _subtitle.WasLoadedWithFrameNumbers = false;
+            if (matroska.FileName.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase) || matroska.FileName.EndsWith(".mks", StringComparison.OrdinalIgnoreCase))
+            {
+                _fileName = matroska.FileName.Substring(0, matroska.FileName.Length - 4);
+                Text = Title + " - " + _fileName;
+            }
+            else
+            {
+                Text = Title;
+            }
+            _fileDateTime = new DateTime();
+
+            _converted = true;
+
+            if (batchMode)
+                return;
+
+            SubtitleListview1.Fill(_subtitle, _subtitleAlternate);
+            if (_subtitle.Paragraphs.Count > 0)
+                SubtitleListview1.SelectIndexAndEnsureVisible(0);
+
+            ShowSource();
         }
 
         public static Subtitle LoadMatroskaSSA(MatroskaSubtitleInfo matroskaSubtitleInfo, string fileName, SubtitleFormat format, List<SubtitleSequence> sub)
@@ -9363,234 +9355,218 @@ namespace Nikse.SubtitleEdit.Forms
             output.Flush();
         }
 
-        private void LoadVobSubFromMatroska(MatroskaSubtitleInfo matroskaSubtitleInfo, string fileName)
+        private void LoadVobSubFromMatroska(MatroskaSubtitleInfo matroskaSubtitleInfo, Matroska matroska)
         {
             if (matroskaSubtitleInfo.ContentEncodingType == 1)
             {
                 MessageBox.Show("Encrypted VobSub content not supported");
             }
 
-            using (var matroska = new Matroska(fileName))
+            ShowStatus(_language.ParsingMatroskaFile);
+            Refresh();
+            Cursor.Current = Cursors.WaitCursor;
+            var sub = matroska.GetMatroskaSubtitle((int)matroskaSubtitleInfo.TrackNumber, MatroskaProgress);
+            Cursor.Current = Cursors.Default;
+
+            MakeHistoryForUndo(_language.BeforeImportFromMatroskaFile);
+            _subtitleListViewIndex = -1;
+            _subtitle.Paragraphs.Clear();
+
+            List<VobSubMergedPack> mergedVobSubPacks = new List<VobSubMergedPack>();
+            Nikse.SubtitleEdit.Logic.VobSub.Idx idx = new Logic.VobSub.Idx(matroskaSubtitleInfo.CodecPrivate.Split(Utilities.NewLineChars, StringSplitOptions.RemoveEmptyEntries));
+            foreach (SubtitleSequence p in sub)
             {
-                if (!matroska.IsValid)
+                if (matroskaSubtitleInfo.ContentEncodingType == 0) // compressed with zlib
                 {
-                    return;
-                }
-
-                ShowStatus(_language.ParsingMatroskaFile);
-                Refresh();
-                Cursor.Current = Cursors.WaitCursor;
-                var sub = matroska.GetMatroskaSubtitle((int)matroskaSubtitleInfo.TrackNumber, MatroskaProgress);
-                Cursor.Current = Cursors.Default;
-
-                MakeHistoryForUndo(_language.BeforeImportFromMatroskaFile);
-                _subtitleListViewIndex = -1;
-                _subtitle.Paragraphs.Clear();
-
-                List<VobSubMergedPack> mergedVobSubPacks = new List<VobSubMergedPack>();
-                Nikse.SubtitleEdit.Logic.VobSub.Idx idx = new Logic.VobSub.Idx(matroskaSubtitleInfo.CodecPrivate.Split(Utilities.NewLineChars, StringSplitOptions.RemoveEmptyEntries));
-                foreach (SubtitleSequence p in sub)
-                {
-                    if (matroskaSubtitleInfo.ContentEncodingType == 0) // compressed with zlib
+                    bool error = false;
+                    MemoryStream outStream = new MemoryStream();
+                    var outZStream = new zlib.ZOutputStream(outStream);
+                    MemoryStream inStream = new MemoryStream(p.BinaryData);
+                    byte[] buffer = null;
+                    try
                     {
-                        bool error = false;
-                        MemoryStream outStream = new MemoryStream();
-                        var outZStream = new zlib.ZOutputStream(outStream);
-                        MemoryStream inStream = new MemoryStream(p.BinaryData);
-                        byte[] buffer = null;
-                        try
-                        {
-                            CopyStream(inStream, outZStream);
-                            buffer = new byte[outZStream.TotalOut];
-                            outStream.Position = 0;
-                            outStream.Read(buffer, 0, buffer.Length);
-                        }
-                        catch (Exception exception)
-                        {
-                            MessageBox.Show(exception.Message + Environment.NewLine + Environment.NewLine + exception.StackTrace);
-                            error = true;
-                        }
-                        finally
-                        {
-                            outZStream.Close();
-                            inStream.Close();
-                        }
-
-                        if (!error)
-                            mergedVobSubPacks.Add(new VobSubMergedPack(buffer, TimeSpan.FromMilliseconds(p.StartMilliseconds), 32, null));
+                        CopyStream(inStream, outZStream);
+                        buffer = new byte[outZStream.TotalOut];
+                        outStream.Position = 0;
+                        outStream.Read(buffer, 0, buffer.Length);
                     }
-                    else
+                    catch (Exception exception)
                     {
-                        mergedVobSubPacks.Add(new VobSubMergedPack(p.BinaryData, TimeSpan.FromMilliseconds(p.StartMilliseconds), 32, null));
+                        MessageBox.Show(exception.Message + Environment.NewLine + Environment.NewLine + exception.StackTrace);
+                        error = true;
                     }
-                    mergedVobSubPacks[mergedVobSubPacks.Count - 1].EndTime = TimeSpan.FromMilliseconds(p.EndMilliseconds);
+                    finally
+                    {
+                        outZStream.Close();
+                        inStream.Close();
+                    }
 
-                    // fix overlapping (some versions of Handbrake makes overlapping time codes - thx Hawke)
-                    if (mergedVobSubPacks.Count > 1 && mergedVobSubPacks[mergedVobSubPacks.Count - 2].EndTime > mergedVobSubPacks[mergedVobSubPacks.Count - 1].StartTime)
-                        mergedVobSubPacks[mergedVobSubPacks.Count - 2].EndTime = TimeSpan.FromMilliseconds(mergedVobSubPacks[mergedVobSubPacks.Count - 1].StartTime.TotalMilliseconds - 1);
+                    if (!error)
+                        mergedVobSubPacks.Add(new VobSubMergedPack(buffer, TimeSpan.FromMilliseconds(p.StartMilliseconds), 32, null));
                 }
-
-                var formSubOcr = new VobSubOcr();
-                _formPositionsAndSizes.SetPositionAndSize(formSubOcr);
-                formSubOcr.Initialize(mergedVobSubPacks, idx.Palette, Configuration.Settings.VobSubOcr, null); //TODO - language???
-                if (_loading)
+                else
                 {
-                    formSubOcr.Icon = (Icon)Icon.Clone();
-                    formSubOcr.ShowInTaskbar = true;
-                    formSubOcr.ShowIcon = true;
+                    mergedVobSubPacks.Add(new VobSubMergedPack(p.BinaryData, TimeSpan.FromMilliseconds(p.StartMilliseconds), 32, null));
                 }
-                if (formSubOcr.ShowDialog(this) == DialogResult.OK)
-                {
-                    ResetSubtitle();
-                    _subtitle.Paragraphs.Clear();
-                    _subtitle.WasLoadedWithFrameNumbers = false;
-                    foreach (Paragraph p in formSubOcr.SubtitleFromOcr.Paragraphs)
-                        _subtitle.Paragraphs.Add(p);
+                mergedVobSubPacks[mergedVobSubPacks.Count - 1].EndTime = TimeSpan.FromMilliseconds(p.EndMilliseconds);
 
-                    ShowSource();
-                    SubtitleListview1.Fill(_subtitle, _subtitleAlternate);
-                    _subtitleListViewIndex = -1;
-                    SubtitleListview1.FirstVisibleIndex = -1;
-                    SubtitleListview1.SelectIndexAndEnsureVisible(0);
-
-                    _fileName = Path.GetFileNameWithoutExtension(fileName);
-                    _converted = true;
-                    Text = Title;
-
-                    Configuration.Settings.Save();
-                }
-                _formPositionsAndSizes.SavePositionAndSize(formSubOcr);
-                formSubOcr.Dispose();
+                // fix overlapping (some versions of Handbrake makes overlapping time codes - thx Hawke)
+                if (mergedVobSubPacks.Count > 1 && mergedVobSubPacks[mergedVobSubPacks.Count - 2].EndTime > mergedVobSubPacks[mergedVobSubPacks.Count - 1].StartTime)
+                    mergedVobSubPacks[mergedVobSubPacks.Count - 2].EndTime = TimeSpan.FromMilliseconds(mergedVobSubPacks[mergedVobSubPacks.Count - 1].StartTime.TotalMilliseconds - 1);
             }
+
+            var formSubOcr = new VobSubOcr();
+            _formPositionsAndSizes.SetPositionAndSize(formSubOcr);
+            formSubOcr.Initialize(mergedVobSubPacks, idx.Palette, Configuration.Settings.VobSubOcr, null); //TODO - language???
+            if (_loading)
+            {
+                formSubOcr.Icon = (Icon)Icon.Clone();
+                formSubOcr.ShowInTaskbar = true;
+                formSubOcr.ShowIcon = true;
+            }
+            if (formSubOcr.ShowDialog(this) == DialogResult.OK)
+            {
+                ResetSubtitle();
+                _subtitle.Paragraphs.Clear();
+                _subtitle.WasLoadedWithFrameNumbers = false;
+                foreach (Paragraph p in formSubOcr.SubtitleFromOcr.Paragraphs)
+                    _subtitle.Paragraphs.Add(p);
+
+                ShowSource();
+                SubtitleListview1.Fill(_subtitle, _subtitleAlternate);
+                _subtitleListViewIndex = -1;
+                SubtitleListview1.FirstVisibleIndex = -1;
+                SubtitleListview1.SelectIndexAndEnsureVisible(0);
+
+                _fileName = Path.GetFileNameWithoutExtension(matroska.FileName);
+                _converted = true;
+                Text = Title;
+
+                Configuration.Settings.Save();
+            }
+            _formPositionsAndSizes.SavePositionAndSize(formSubOcr);
+            formSubOcr.Dispose();
         }
 
-        private void LoadBluRaySubFromMatroska(MatroskaSubtitleInfo matroskaSubtitleInfo, string fileName)
+        private void LoadBluRaySubFromMatroska(MatroskaSubtitleInfo matroskaSubtitleInfo, Matroska matroska)
         {
             if (matroskaSubtitleInfo.ContentEncodingType == 1)
             {
                 MessageBox.Show("Encrypted vobsub content not supported");
             }
 
-            using (var matroska = new Matroska(fileName))
+            ShowStatus(_language.ParsingMatroskaFile);
+            Refresh();
+            Cursor.Current = Cursors.WaitCursor;
+            var sub = matroska.GetMatroskaSubtitle((int)matroskaSubtitleInfo.TrackNumber, MatroskaProgress);
+            Cursor.Current = Cursors.Default;
+
+            int noOfErrors = 0;
+            string lastError = string.Empty;
+            MakeHistoryForUndo(_language.BeforeImportFromMatroskaFile);
+            _subtitleListViewIndex = -1;
+            _subtitle.Paragraphs.Clear();
+            var subtitles = new List<BluRaySupParser.PcsData>();
+            StringBuilder log = new StringBuilder();
+            foreach (SubtitleSequence p in sub)
             {
-                if (!matroska.IsValid)
+                byte[] buffer = null;
+                if (matroskaSubtitleInfo.ContentEncodingType == 0) // compressed with zlib
                 {
-                    return;
-                }
-
-                ShowStatus(_language.ParsingMatroskaFile);
-                Refresh();
-                Cursor.Current = Cursors.WaitCursor;
-                var sub = matroska.GetMatroskaSubtitle((int)matroskaSubtitleInfo.TrackNumber, MatroskaProgress);
-                Cursor.Current = Cursors.Default;
-
-                int noOfErrors = 0;
-                string lastError = string.Empty;
-                MakeHistoryForUndo(_language.BeforeImportFromMatroskaFile);
-                _subtitleListViewIndex = -1;
-                _subtitle.Paragraphs.Clear();
-                var subtitles = new List<BluRaySupParser.PcsData>();
-                StringBuilder log = new StringBuilder();
-                foreach (SubtitleSequence p in sub)
-                {
-                    byte[] buffer = null;
-                    if (matroskaSubtitleInfo.ContentEncodingType == 0) // compressed with zlib
+                    MemoryStream outStream = new MemoryStream();
+                    var outZStream = new zlib.ZOutputStream(outStream);
+                    MemoryStream inStream = new MemoryStream(p.BinaryData);
+                    try
                     {
-                        MemoryStream outStream = new MemoryStream();
-                        var outZStream = new zlib.ZOutputStream(outStream);
-                        MemoryStream inStream = new MemoryStream(p.BinaryData);
-                        try
-                        {
-                            CopyStream(inStream, outZStream);
-                            buffer = new byte[outZStream.TotalOut];
-                            outStream.Position = 0;
-                            outStream.Read(buffer, 0, buffer.Length);
-                        }
-                        catch (Exception exception)
-                        {
-                            var tc = new TimeCode(p.StartMilliseconds);
-                            lastError = tc + ": " + exception.Message + ": " + exception.StackTrace;
-                            noOfErrors++;
-                        }
-                        finally
-                        {
-                            outZStream.Close();
-                            inStream.Close();
-                        }
+                        CopyStream(inStream, outZStream);
+                        buffer = new byte[outZStream.TotalOut];
+                        outStream.Position = 0;
+                        outStream.Read(buffer, 0, buffer.Length);
                     }
-                    else
+                    catch (Exception exception)
                     {
-                        buffer = p.BinaryData;
+                        var tc = new TimeCode(p.StartMilliseconds);
+                        lastError = tc + ": " + exception.Message + ": " + exception.StackTrace;
+                        noOfErrors++;
                     }
-                    if (buffer != null && buffer.Length > 100)
+                    finally
                     {
-                        MemoryStream ms = new MemoryStream(buffer);
-                        var list = BluRaySupParser.ParseBluRaySup(ms, log, true);
-                        foreach (var sup in list)
-                        {
-                            sup.StartTime = (long)((p.StartMilliseconds - 1) * 90.0);
-                            sup.EndTime = (long)((p.EndMilliseconds - 1) * 90.0);
-                            subtitles.Add(sup);
-
-                            // fix overlapping
-                            if (subtitles.Count > 1 && sub[subtitles.Count - 2].EndMilliseconds > sub[subtitles.Count - 1].StartMilliseconds)
-                                subtitles[subtitles.Count - 2].EndTime = subtitles[subtitles.Count - 1].StartTime - 1;
-                        }
-                        ms.Close();
-                    }
-                    else if (subtitles.Count > 0)
-                    {
-                        var lastSub = subtitles[subtitles.Count - 1];
-                        if (lastSub.StartTime == lastSub.EndTime)
-                        {
-                            lastSub.EndTime = (long)((p.StartMilliseconds - 1) * 90.0);
-                            if (lastSub.EndTime - lastSub.StartTime > 1000000)
-                                lastSub.EndTime = lastSub.StartTime;
-                        }
+                        outZStream.Close();
+                        inStream.Close();
                     }
                 }
-
-                if (noOfErrors > 0)
+                else
                 {
-                    MessageBox.Show(string.Format("{0} error(s) occured during extraction of bdsup\r\n\r\n{1}", noOfErrors, lastError));
+                    buffer = p.BinaryData;
                 }
-
-                var formSubOcr = new VobSubOcr();
-                _formPositionsAndSizes.SetPositionAndSize(formSubOcr);
-                formSubOcr.Initialize(subtitles, Configuration.Settings.VobSubOcr, fileName);
-                if (_loading)
+                if (buffer != null && buffer.Length > 100)
                 {
-                    formSubOcr.Icon = (Icon)Icon.Clone();
-                    formSubOcr.ShowInTaskbar = true;
-                    formSubOcr.ShowIcon = true;
-                }
-                if (formSubOcr.ShowDialog(this) == DialogResult.OK)
-                {
-                    MakeHistoryForUndo(_language.BeforeImportingDvdSubtitle);
-
-                    _subtitle.Paragraphs.Clear();
-                    SetCurrentFormat(Configuration.Settings.General.DefaultSubtitleFormat);
-                    _subtitle.WasLoadedWithFrameNumbers = false;
-                    _subtitle.CalculateFrameNumbersFromTimeCodes(CurrentFrameRate);
-                    foreach (Paragraph p in formSubOcr.SubtitleFromOcr.Paragraphs)
+                    MemoryStream ms = new MemoryStream(buffer);
+                    var list = BluRaySupParser.ParseBluRaySup(ms, log, true);
+                    foreach (var sup in list)
                     {
-                        _subtitle.Paragraphs.Add(p);
+                        sup.StartTime = (long)((p.StartMilliseconds - 1) * 90.0);
+                        sup.EndTime = (long)((p.EndMilliseconds - 1) * 90.0);
+                        subtitles.Add(sup);
+
+                        // fix overlapping
+                        if (subtitles.Count > 1 && sub[subtitles.Count - 2].EndMilliseconds > sub[subtitles.Count - 1].StartMilliseconds)
+                            subtitles[subtitles.Count - 2].EndTime = subtitles[subtitles.Count - 1].StartTime - 1;
                     }
-
-                    ShowSource();
-                    SubtitleListview1.Fill(_subtitle, _subtitleAlternate);
-                    _subtitleListViewIndex = -1;
-                    SubtitleListview1.FirstVisibleIndex = -1;
-                    SubtitleListview1.SelectIndexAndEnsureVisible(0);
-
-                    _fileName = string.Empty;
-                    Text = Title;
-
-                    Configuration.Settings.Save();
+                    ms.Close();
                 }
-                _formPositionsAndSizes.SavePositionAndSize(formSubOcr);
-                formSubOcr.Dispose();
+                else if (subtitles.Count > 0)
+                {
+                    var lastSub = subtitles[subtitles.Count - 1];
+                    if (lastSub.StartTime == lastSub.EndTime)
+                    {
+                        lastSub.EndTime = (long)((p.StartMilliseconds - 1) * 90.0);
+                        if (lastSub.EndTime - lastSub.StartTime > 1000000)
+                            lastSub.EndTime = lastSub.StartTime;
+                    }
+                }
             }
+
+            if (noOfErrors > 0)
+            {
+                MessageBox.Show(string.Format("{0} error(s) occured during extraction of bdsup\r\n\r\n{1}", noOfErrors, lastError));
+            }
+
+            var formSubOcr = new VobSubOcr();
+            _formPositionsAndSizes.SetPositionAndSize(formSubOcr);
+            formSubOcr.Initialize(subtitles, Configuration.Settings.VobSubOcr, matroska.FileName);
+            if (_loading)
+            {
+                formSubOcr.Icon = (Icon)Icon.Clone();
+                formSubOcr.ShowInTaskbar = true;
+                formSubOcr.ShowIcon = true;
+            }
+            if (formSubOcr.ShowDialog(this) == DialogResult.OK)
+            {
+                MakeHistoryForUndo(_language.BeforeImportingDvdSubtitle);
+
+                _subtitle.Paragraphs.Clear();
+                SetCurrentFormat(Configuration.Settings.General.DefaultSubtitleFormat);
+                _subtitle.WasLoadedWithFrameNumbers = false;
+                _subtitle.CalculateFrameNumbersFromTimeCodes(CurrentFrameRate);
+                foreach (Paragraph p in formSubOcr.SubtitleFromOcr.Paragraphs)
+                {
+                    _subtitle.Paragraphs.Add(p);
+                }
+
+                ShowSource();
+                SubtitleListview1.Fill(_subtitle, _subtitleAlternate);
+                _subtitleListViewIndex = -1;
+                SubtitleListview1.FirstVisibleIndex = -1;
+                SubtitleListview1.SelectIndexAndEnsureVisible(0);
+
+                _fileName = string.Empty;
+                Text = Title;
+
+                Configuration.Settings.Save();
+            }
+            _formPositionsAndSizes.SavePositionAndSize(formSubOcr);
+            formSubOcr.Dispose();
         }
 
         private bool ImportSubtitleFromDvbSupFile(string fileName)
@@ -10148,12 +10124,12 @@ namespace Nikse.SubtitleEdit.Forms
                             subtitleChooser.Initialize(subtitleList);
                             if (subtitleChooser.ShowDialog(this) == DialogResult.OK)
                             {
-                                LoadMatroskaSubtitle(subtitleList[subtitleChooser.SelectedIndex], fileName, false);
+                                LoadMatroskaSubtitle(subtitleList[subtitleChooser.SelectedIndex], matroska, false);
                             }
                         }
                         else
                         {
-                            LoadMatroskaSubtitle(subtitleList[0], fileName, false);
+                            LoadMatroskaSubtitle(subtitleList[0], matroska, false);
                         }
                     }
                     return;
