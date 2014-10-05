@@ -76,6 +76,8 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             CodecId = 0x86,
             CodecPrivate = 0x63A2,
             Video = 0xE0,
+            PixelWidth = 0xB0,
+            PixelHeight = 0xBA,
             Audio = 0xE1,
             ContentEncodings = 0x6D80,
 
@@ -267,65 +269,29 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             return (clusterTimeCode + trackStartTime) * _timecodeScale / 1000000;
         }
 
-        private UInt32 GetMatroskaTrackVideoId()
-        {
-            UInt32 s = (byte)_f.ReadByte();
-
-            if (s == (uint)ElementId.Void ||
-                s == (uint)ElementId.Crc32 ||
-                s == 0xB0 || // PixelWidth
-                s == 0xBA || // PixelHeight
-                s == 0x9A)   // FlagInterlaced
-            {
-                return s;
-            }
-
-            s = s * 256 + (byte)_f.ReadByte();
-            if (s == 0x54B0 || // DisplayWidth
-                s == 0x54BA || // DisplayHeight
-                s == 0x54BA || // DisplayHeight
-                s == 0x54AA || // PixelCropButton
-                s == 0x54BB || // PixelCropTop
-                s == 0x54CC || // PixelCropLeft
-                s == 0x54DD || // PixelCropRight
-                s == 0x54DD || // PixelCropRight
-                s == 0x54B2 || // DisplayUnit
-                s == 0x54B3)   // AspectRatioType
-                return s;
-            s = s * 256 + (byte)_f.ReadByte();
-
-            if (s == 0x2EB524)// ColourSpace
-                return s;
-
-            return 0;
-        }
-
         private void AnalyzeMatroskaTrackVideo(long endPosition)
         {
             while (_f.Position < endPosition)
             {
-                var matroskaId = GetMatroskaTrackVideoId();
+                var matroskaId = ReadEbmlId();
                 if (matroskaId == 0)
                 {
                     break;
                 }
                 var dataSize = (long)ReadVariableLengthUInt();
 
-                long afterPosition;
-                if (matroskaId == 0xB0) // PixelWidth
+                switch (matroskaId)
                 {
-                    afterPosition = _f.Position + dataSize;
-                    _pixelWidth = (int)ReadUInt((int)dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                    case ElementId.PixelWidth:
+                        _pixelWidth = (int)ReadUInt((int)dataSize);
+                        break;
+                    case ElementId.PixelHeight:
+                        _pixelHeight = (int)ReadUInt((int)dataSize);
+                        break;
+                    default:
+                        _f.Seek(dataSize, SeekOrigin.Current);
+                        break;
                 }
-                else if (matroskaId == 0xBA) // PixelHeight
-                {
-                    afterPosition = _f.Position + dataSize;
-                    _pixelHeight = (int)ReadUInt((int)dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else
-                    _f.Seek(dataSize, SeekOrigin.Current);
             }
         }
 
