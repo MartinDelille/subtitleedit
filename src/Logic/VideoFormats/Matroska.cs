@@ -80,6 +80,10 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             ContentEncodings = 0x6D80,
 
             Cluster = 0x1F43B675,
+            Timecode = 0xE7,
+            SimpleBlock = 0xA3,
+            BlockGroup = 0xA0,
+
             Cues = 0x1C53BB6B,
             Attachments = 0x1941A469,
             Chapters = 0x1043A770,
@@ -225,7 +229,7 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
             while (_f.Position < _f.Length)
             {
-                var matroskaId = GetMatroskaClusterId();
+                var matroskaId = ReadEbmlId();
                 if (matroskaId == 0)
                 {
                     break;
@@ -233,31 +237,32 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
                 var dataSize = (long)ReadVariableLengthUInt();
 
                 long afterPosition;
-                if (matroskaId == 0xE7) // Timecode
+                switch (matroskaId)
                 {
-                    afterPosition = _f.Position + dataSize;
-                    clusterTimeCode = (long)ReadUInt((int)dataSize); // Absolute timestamp of the cluster (based on TimecodeScale).
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0xA0) // BlockGroup
-                {
-                    afterPosition = _f.Position + dataSize;
-                    AnalyzeMatroskaBlock(clusterTimeCode);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0xA3) // SimpleBlock
-                {
-                    afterPosition = _f.Position + dataSize;
-                    var trackNumber = (int)ReadVariableLengthUInt();
-                    if (trackNumber == targetTrackNumber)
-                    {
-                        trackStartTime = ReadInt16(); // Timecode (relative to Cluster timecode, signed int16)
+                    case ElementId.Timecode:
+                        // Absolute timestamp of the cluster (based on TimecodeScale)
+                        clusterTimeCode = (long)ReadUInt((int)dataSize);
                         break;
-                    }
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                    case ElementId.BlockGroup:
+                        afterPosition = _f.Position + dataSize;
+                        AnalyzeMatroskaBlock(clusterTimeCode);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.SimpleBlock:
+                        afterPosition = _f.Position + dataSize;
+                        var trackNumber = (int)ReadVariableLengthUInt();
+                        if (trackNumber == targetTrackNumber)
+                        {
+                            // Timecode (relative to Cluster timecode, signed int16)
+                            trackStartTime = ReadInt16();
+                            _f.Position = _f.Length; // break while
+                        }
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    default:
+                        _f.Seek(dataSize, SeekOrigin.Current);
+                        break;
                 }
-                else
-                    _f.Seek(dataSize, SeekOrigin.Current);
             }
             return (clusterTimeCode + trackStartTime) * _timecodeScale / 1000000;
         }
@@ -635,46 +640,6 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             videoCodec = _videoCodecId;
         }
 
-        private UInt32 GetMatroskaClusterId()
-        {
-            UInt32 s = (byte)_f.ReadByte();
-
-            if (s == 0xE7 || // TimeCode
-                s == 0xA7 || // Position
-                s == 0xAB || // PrevSize
-                s == 0xA0 || // BlockGroup
-                s == 0xA1 || // Block
-                s == 0xA2 || // BlockVirtual
-                s == 0xA6 || // BlockMore
-                s == 0xEE || // BlockAddID
-                s == 0xA5 || // BlockAdditional
-                s == 0x9B || // BlockDuration
-                s == 0xFA || // ReferencePriority
-                s == 0xFB || // ReferenceBlock
-                s == 0xFD || // ReferenceVirtual
-                s == 0xA4 || // CodecState
-                s == 0x8E || // Slices
-                s == 0x8E || // TimeSlice
-                s == 0xCC || // LaceNumber
-                s == 0xCD || // FrameNumber
-                s == 0xCB || // BlockAdditionID
-                s == 0xCE || // Delay
-                s == 0xCF || // Duration
-                s == 0xA3)   // SimpleBlock
-            {
-                return s;
-            }
-
-            s = s * 256 + (byte)_f.ReadByte();
-
-            if (s == 0x5854 || // SilentTracks
-                s == 0x58D7 || // SilentTrackNumber
-                s == 0x75A1) // BlockAdditions
-                return s;
-
-            return 0;
-        }
-
         private void AnalyzeMatroskaCluster()
         {
             long clusterTimeCode = 0;
@@ -682,7 +647,7 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
             while (_f.Position < _f.Length)
             {
-                var matroskaId = GetMatroskaClusterId();
+                var matroskaId = ReadEbmlId();
                 if (matroskaId == 0)
                 {
                     break;
@@ -690,59 +655,61 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
                 var dataSize = (long)ReadVariableLengthUInt();
 
                 long afterPosition;
-                if (matroskaId == 0xE7) // Timecode
+                switch (matroskaId)
                 {
-                    afterPosition = _f.Position + dataSize;
-                    clusterTimeCode = (long)ReadUInt((int)dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0xA0) // BlockGroup
-                {
-                    afterPosition = _f.Position + dataSize;
-                    AnalyzeMatroskaBlock(clusterTimeCode);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0xA3) // SimpleBlock
-                {
-                    afterPosition = _f.Position + dataSize;
-                    long before = _f.Position;
-                    var trackNumber = (int)ReadVariableLengthUInt();
-                    if (trackNumber == _subtitleRipTrackNumber)
-                    {
-                        int timeCode = ReadInt16();
-
-                        // lacing
-                        byte flags = (byte)_f.ReadByte();
-                        byte numberOfFrames = 0;
-                        switch ((flags & 6))  // 6 = 00000110
+                    case ElementId.Timecode:
+                        clusterTimeCode = (long)ReadUInt((int)dataSize);
+                        break;
+                    case ElementId.BlockGroup:
+                        afterPosition = _f.Position + dataSize;
+                        AnalyzeMatroskaBlock(clusterTimeCode);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.SimpleBlock:
+                        afterPosition = _f.Position + dataSize;
+                        long before = _f.Position;
+                        var trackNumber = (int)ReadVariableLengthUInt();
+                        if (trackNumber == _subtitleRipTrackNumber)
                         {
-                            case 0: System.Diagnostics.Debug.Print("No lacing");   // No lacing
-                                break;
-                            case 2: System.Diagnostics.Debug.Print("Xiph lacing"); // 2 = 00000010 = Xiph lacing
-                                numberOfFrames = (byte)_f.ReadByte();
-                                numberOfFrames++;
-                                break;
-                            case 4: System.Diagnostics.Debug.Print("fixed-size");  // 4 = 00000100 = Fixed-size lacing
-                                numberOfFrames = (byte)_f.ReadByte();
-                                numberOfFrames++;
-                                for (int i = 1; i <= numberOfFrames; i++)
-                                    _f.ReadByte(); // frames
-                                break;
-                            case 6: System.Diagnostics.Debug.Print("EBML");        // 6 = 00000110 = EMBL
-                                numberOfFrames = (byte)_f.ReadByte();
-                                numberOfFrames++;
-                                break;
+                            int timeCode = ReadInt16();
+
+                            // lacing
+                            byte flags = (byte)_f.ReadByte();
+                            byte numberOfFrames = 0;
+                            switch ((flags & 6)) // 6 = 00000110
+                            {
+                                case 0:
+                                    System.Diagnostics.Debug.Print("No lacing"); // No lacing
+                                    break;
+                                case 2:
+                                    System.Diagnostics.Debug.Print("Xiph lacing"); // 2 = 00000010 = Xiph lacing
+                                    numberOfFrames = (byte)_f.ReadByte();
+                                    numberOfFrames++;
+                                    break;
+                                case 4:
+                                    System.Diagnostics.Debug.Print("fixed-size"); // 4 = 00000100 = Fixed-size lacing
+                                    numberOfFrames = (byte)_f.ReadByte();
+                                    numberOfFrames++;
+                                    for (int i = 1; i <= numberOfFrames; i++)
+                                        _f.ReadByte(); // frames
+                                    break;
+                                case 6:
+                                    System.Diagnostics.Debug.Print("EBML"); // 6 = 00000110 = EMBL
+                                    numberOfFrames = (byte)_f.ReadByte();
+                                    numberOfFrames++;
+                                    break;
+                            }
+
+                            byte[] buffer = new byte[dataSize - (_f.Position - before)];
+                            _f.Read(buffer, 0, buffer.Length);
+                            _subtitleRip.Add(new SubtitleSequence(buffer, timeCode + clusterTimeCode, timeCode + clusterTimeCode + duration));
                         }
-
-                        byte[] buffer = new byte[dataSize - (_f.Position - before)];
-                        _f.Read(buffer, 0, buffer.Length);
-                        _subtitleRip.Add(new SubtitleSequence(buffer, timeCode + clusterTimeCode, timeCode + clusterTimeCode + duration));
-
-                    }
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    default:
+                        _f.Seek(dataSize, SeekOrigin.Current);
+                        break;
                 }
-                else
-                    _f.Seek(dataSize, SeekOrigin.Current);
             }
         }
 
