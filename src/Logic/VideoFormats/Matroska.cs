@@ -61,7 +61,10 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             Crc32 = 0xBF,
             Segment = 0x18538067,
             SeekHead = 0x114D9B74,
+            
             Info = 0x1549A966,
+            TimecodeScale = 0x2AD7B1,
+            Duration = 0x4489,
 
             Tracks = 0x1654AE6B,
             TrackEntry = 0xAE,
@@ -86,7 +89,7 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
         private List<MatroskaSubtitleInfo> _subtitleList;
         private int _subtitleRipTrackNumber;
         private List<SubtitleSequence> _subtitleRip = new List<SubtitleSequence>();
-        private long _timeCodeScale = 1000000; // Timestamp scale in nanoseconds (1.000.000 means all timestamps in the segment are expressed in milliseconds).
+        private long _timecodeScale = 1000000; // Timestamp scale in nanoseconds (1.000.000 means all timestamps in the segment are expressed in milliseconds).
         private List<MatroskaTrackInfo> _tracks;
 
         public Matroska(string fileName)
@@ -246,7 +249,7 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
                 else
                     _f.Seek(dataSize, SeekOrigin.Current);
             }
-            return (clusterTimeCode + trackStartTime) * _timeCodeScale / 1000000;
+            return (clusterTimeCode + trackStartTime) * _timecodeScale / 1000000;
         }
 
         private UInt32 GetMatroskaTracksId()
@@ -339,42 +342,6 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             s = s * 256 + (byte)_f.ReadByte();
 
             if (s == 0x2EB524)// ColourSpace
-                return s;
-
-            return 0;
-        }
-
-        private UInt32 GetMatroskaSegmentId()
-        {
-            byte b = (byte)_f.ReadByte();
-
-            if (b == (uint)ElementId.Void || b == (uint)ElementId.Crc32)
-                return b;
-
-            UInt32 s = (UInt32)b * 256 + (byte)_f.ReadByte();
-            if (s == 0x73A4 || // SegmentUID
-                s == 0x7384 || // SegmentFilename
-                s == 0x4444 || // SegmentFamily
-                s == 0x6924 || // ChapterTranslate
-                s == 0x69FC || // ChapterTranslateEditionUID
-                s == 0x69BF || // ChapterTranslateCodec
-                s == 0x69A5 || // ChapterTranslateID
-                s == 0x4489 || // Duration
-                s == 0x4461 || // DateUTC
-                s == 0x7BA9 || // Title
-                s == 0x4D80 || // MuxingApp
-                s == 0x5741)   // WritingApp
-            {
-                return s;
-            }
-
-            s = (UInt32)b * 256 + (byte)_f.ReadByte();
-
-            if (s == 0x3CB923 || // PrevUID
-                s == 0x3C83AB || // PrevFilename
-                s == 0x3EB923 || // NextUID
-                s == 0x3E83BB || // NextFilename
-                s == 0x2AD7B1)   // TimecodeScale
                 return s;
 
             return 0;
@@ -622,38 +589,35 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
         private void AnalyzeMatroskaSegmentInformation(long endPosition)
         {
-            long timeCodeScale = 0;
-            double duration8b = 0;
+            var duration = 0.0;
 
             while (_f.Position < endPosition)
             {
-                var matroskaId = GetMatroskaSegmentId();
+                var matroskaId = ReadEbmlId();
                 if (matroskaId == 0)
                 {
                     break;
                 }
                 var dataSize = (long)ReadVariableLengthUInt();
 
-                long afterPosition;
-                if (matroskaId == 0x2AD7B1)// TimecodeScale - u-integer     Timecode scale in nanoseconds (1.000.000 means all timecodes in the segment are expressed in milliseconds).
+                switch (matroskaId)
                 {
-                    afterPosition = _f.Position + dataSize;
-                    _timeCodeScale = (int)ReadUInt((int)dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                    case ElementId.TimecodeScale: // Timestamp scale in nanoseconds (1.000.000 means all timestamps in the segment are expressed in milliseconds)
+                        _timecodeScale = (int)ReadUInt((int)dataSize);
+                        break;
+                    case ElementId.Duration: // Duration of the segment (based on TimecodeScale)
+                        duration = dataSize == 4 ? ReadFloat32() : ReadFloat64();
+                        break;
+                    default:
+                        _f.Seek(dataSize, SeekOrigin.Current);
+                        break;
                 }
-                else if (matroskaId == 0x4489)// Duration (float)
-                {
-                    afterPosition = _f.Position + dataSize;
-                    duration8b = dataSize == 4 ? ReadFloat32() : ReadFloat64();
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else
-                    _f.Seek(dataSize, SeekOrigin.Current);
             }
-            if (timeCodeScale > 0 && duration8b > 0)
-                _durationInMilliseconds = duration8b / timeCodeScale * 1000000.0;
-            else if (duration8b > 0)
-                _durationInMilliseconds = duration8b;
+
+            if (_timecodeScale > 0 && duration > 0)
+                _durationInMilliseconds = duration / _timecodeScale * 1000000.0;
+            else if (duration > 0)
+                _durationInMilliseconds = duration;
         }
 
         private void AnalyzeMatroskaTracks()
