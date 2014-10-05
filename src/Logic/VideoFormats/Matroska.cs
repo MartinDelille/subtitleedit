@@ -75,59 +75,6 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
         public delegate void LoadMatroskaCallback(long position, long total);
 
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Pack = 2)]
-        private struct FloatLayout32
-        {
-            [System.Runtime.InteropServices.FieldOffset(0)]
-            public byte B1;
-
-            [System.Runtime.InteropServices.FieldOffset(1)]
-            public byte B2;
-
-            [System.Runtime.InteropServices.FieldOffset(2)]
-            public byte B3;
-
-            [System.Runtime.InteropServices.FieldOffset(3)]
-            public byte B4;
-
-            [System.Runtime.InteropServices.FieldOffset(0)]
-            public Single FloatData32; //32-bit
-
-            [System.Runtime.InteropServices.FieldOffset(0)]
-            public UInt32 UintData32; //32-bit
-        }
-
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Pack = 2)]
-        private struct FloatLayout64
-        {
-            [System.Runtime.InteropServices.FieldOffset(0)]
-            public byte B1;
-
-            [System.Runtime.InteropServices.FieldOffset(1)]
-            public byte B2;
-
-            [System.Runtime.InteropServices.FieldOffset(2)]
-            public byte B3;
-
-            [System.Runtime.InteropServices.FieldOffset(3)]
-            public byte B4;
-
-            [System.Runtime.InteropServices.FieldOffset(4)]
-            public byte B5;
-
-            [System.Runtime.InteropServices.FieldOffset(5)]
-            public byte B6;
-
-            [System.Runtime.InteropServices.FieldOffset(6)]
-            public byte B7;
-
-            [System.Runtime.InteropServices.FieldOffset(7)]
-            public byte B8;
-
-            [System.Runtime.InteropServices.FieldOffset(0)]
-            public Double FloatData64; //64-bit
-        }
-
         private readonly string _fileName;
         private readonly FileStream _f;
         private readonly bool _valid;
@@ -697,16 +644,7 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
                 else if (matroskaId == 0x4489)// Duration (float)
                 {
                     afterPosition = _f.Position + dataSize;
-
-                    if (dataSize == 4)
-                    {
-                        duration8b = GetFloat32();
-                    }
-                    else
-                    {
-                        duration8b = GetFloat64();
-                    }
-
+                    duration8b = dataSize == 4 ? ReadFloat32() : ReadFloat64();
                     _f.Seek(afterPosition, SeekOrigin.Begin);
                 }
                 else
@@ -716,36 +654,6 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
                 _durationInMilliseconds = duration8b / timeCodeScale * 1000000.0;
             else if (duration8b > 0)
                 _durationInMilliseconds = duration8b;
-        }
-
-        private double GetFloat32()
-        {
-            FloatLayout32 floatLayout = new FloatLayout32();
-
-            // reverse byte ordering
-            floatLayout.B4 = (byte)_f.ReadByte();
-            floatLayout.B3 = (byte)_f.ReadByte();
-            floatLayout.B2 = (byte)_f.ReadByte();
-            floatLayout.B1 = (byte)_f.ReadByte();
-
-            return floatLayout.FloatData32;
-        }
-
-        private double GetFloat64()
-        {
-            FloatLayout64 floatLayout = new FloatLayout64();
-
-            // reverse byte ordering
-            floatLayout.B8 = (byte)_f.ReadByte();
-            floatLayout.B7 = (byte)_f.ReadByte();
-            floatLayout.B6 = (byte)_f.ReadByte();
-            floatLayout.B5 = (byte)_f.ReadByte();
-            floatLayout.B4 = (byte)_f.ReadByte();
-            floatLayout.B3 = (byte)_f.ReadByte();
-            floatLayout.B2 = (byte)_f.ReadByte();
-            floatLayout.B1 = (byte)_f.ReadByte();
-
-            return floatLayout.FloatData64;
         }
 
         private void AnalyzeMatroskaTracks()
@@ -1196,6 +1104,32 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             var data = new byte[2];
             _f.Read(data, 0, 2);
             return (short)(data[0] << 8 | data[1]);
+        }
+
+        /// <summary>
+        /// Reads a 4-byte floating point value from the current stream and advances the current
+        /// position of the stream by four bytes.
+        /// </summary>
+        /// <returns>A 4-byte floating point value read from the current stream.</returns>
+        private unsafe float ReadFloat32()
+        {
+            var data = new byte[4];
+            _f.Read(data, 0, 4);
+            var result = data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3];
+            return *(float*)&result;
+        }
+
+        /// <summary>
+        /// Reads a 8-byte floating point value from the current stream and advances the current
+        /// position of the stream by eight bytes.
+        /// </summary>
+        /// <returns>A 8-byte floating point value read from the current stream.</returns>
+        private unsafe double ReadFloat64()
+        {
+            var data = new byte[8];
+            _f.Read(data, 0, 8);
+            var result = (long)(data[0] << 56 | data[1] << 48 | data[2] << 40 | data[3] << 32 | data[4] << 24 | data[5] << 16 | data[6] << 8 | data[7]);
+            return *(double*)&result;
         }
 
         /// <summary>
