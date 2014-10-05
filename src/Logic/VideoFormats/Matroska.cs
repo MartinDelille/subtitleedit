@@ -80,6 +80,12 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             PixelHeight = 0xBA,
             Audio = 0xE1,
             ContentEncodings = 0x6D80,
+            ContentEncodingOrder = 0x5031,
+            ContentEncodingScope = 0x5032,
+            ContentEncodingType = 0x5033,
+            ContentCompression = 0x5034,
+            ContentCompAlgo = 0x4254,
+            ContentCompSettings = 0x4255,
 
             Cluster = 0x1F43B675,
             Timecode = 0xE7,
@@ -448,45 +454,45 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
         {
             while (_f.Position < endPosition)
             {
-                int ebmlId = _f.ReadByte() * 256 + _f.ReadByte();
-                if (ebmlId == 0)
+                var elementId = ReadEbmlId();
+                if (elementId == 0)
                 {
                     break;
                 }
+                var elementSize = (long)ReadVariableLengthUInt();
 
-                if (ebmlId == 0x5031)// ContentEncodingOrder
+                switch (elementId)
                 {
-                    int contentEncodingOrder = _f.ReadByte() * 256 + _f.ReadByte();
-                    System.Diagnostics.Debug.WriteLine("ContentEncodingOrder: " + contentEncodingOrder);
-                }
-                else if (ebmlId == 0x5032)// ContentEncodingScope
-                {
-                    int contentEncodingScope = _f.ReadByte() * 256 + _f.ReadByte();
-                    System.Diagnostics.Debug.WriteLine("ContentEncodingScope: " + contentEncodingScope);
-                }
-                else if (ebmlId == 0x5033)// ContentEncodingType
-                {
-                    contentEncodingType = _f.ReadByte() * 256 + _f.ReadByte();
-                }
-                else if (ebmlId == 0x5034)// ContentCompression
-                {
-                    var dataSize = (long)ReadVariableLengthUInt();
-                    long afterPosition = _f.Position + dataSize;
-                    while (_f.Position < afterPosition)
-                    {
-                        int contentCompressionId = _f.ReadByte() * 256 + _f.ReadByte();
-                        if (contentCompressionId == 0x4254)
+                    case ElementId.ContentEncodingOrder:
+                        var contentEncodingOrder = ReadUInt((int)elementSize);
+                        System.Diagnostics.Debug.WriteLine("ContentEncodingOrder: " + contentEncodingOrder);
+                        break;
+                    case ElementId.ContentEncodingScope:
+                        var contentEncodingScope = ReadUInt((int)elementSize);
+                        System.Diagnostics.Debug.WriteLine("ContentEncodingScope: " + contentEncodingScope);
+                        break;
+                    case ElementId.ContentEncodingType:
+                        contentEncodingType = (int)ReadUInt((int)elementSize);
+                        break;
+                    case ElementId.ContentCompression:
+                        var afterPosition = _f.Position + elementSize;
+                        while (_f.Position < afterPosition)
                         {
-                            contentCompressionAlgorithm = _f.ReadByte() * 256 + _f.ReadByte();
+                            elementId = ReadEbmlId();
+                            elementSize = (long)ReadVariableLengthUInt();
+                            switch (elementId)
+                            {
+                                case ElementId.ContentCompAlgo:
+                                    contentCompressionAlgorithm = (int)ReadUInt((int)elementSize);
+                                    break;
+                                case ElementId.ContentCompSettings:
+                                    var contentCompSettings = ReadUInt((int)elementSize);
+                                    System.Diagnostics.Debug.WriteLine("ContentCompSettings: " + contentCompSettings);
+                                    break;
+                            }
                         }
-                        else if (contentCompressionId == 0x4255)
-                        {
-                            int contentCompSettings = _f.ReadByte() * 256 + _f.ReadByte();
-                            System.Diagnostics.Debug.WriteLine("contentCompSettings: " + contentCompSettings);
-                        }
-
-                    }
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
                 }
             }
         }
