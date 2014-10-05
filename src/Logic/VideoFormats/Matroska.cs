@@ -91,6 +91,8 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             Timecode = 0xE7,
             SimpleBlock = 0xA3,
             BlockGroup = 0xA0,
+            Block = 0xA1,
+            BlockDuration = 0x9B,
 
             Cues = 0x1C53BB6B,
             Attachments = 0x1941A469,
@@ -687,66 +689,67 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
         private void AnalyzeMatroskaBlock(long clusterTimeCode)
         {
-            long duration = 0;
-            byte b = (byte)_f.ReadByte();
-            if (b == 0xA1) // Block
+            var elementId = ReadEbmlId();
+            if (elementId != ElementId.Block)
             {
-                var dataSize = (long)ReadVariableLengthUInt();
-                long afterPosition = _f.Position + dataSize;
+                return;
+            }
+            var elementSize = (long)ReadVariableLengthUInt();
+            var afterPosition = _f.Position + elementSize;
 
-                // track number
-                var trackNo = (int)ReadVariableLengthUInt();
+            var trackNumber = (int)ReadVariableLengthUInt();
+            var timeCode = ReadInt16();
 
-                // time code
-                var timeCode = ReadInt16();
+            // lacing
+            var flags = (byte)_f.ReadByte();
+            byte numberOfFrames = 0;
+            switch (flags & 6)
+            {
+                case 0: // 00000000 = No lacing
+                    System.Diagnostics.Debug.Print("No lacing");
+                    break;
+                case 2: // 00000010 = Xiph lacing
+                    System.Diagnostics.Debug.Print("Xiph lacing");
+                    numberOfFrames = (byte)_f.ReadByte();
+                    numberOfFrames++;
+                    break;
+                case 4: // 00000100 = Fixed-size lacing
+                    System.Diagnostics.Debug.Print("Fixed-size lacing");
+                    numberOfFrames = (byte)_f.ReadByte();
+                    numberOfFrames++;
+                    for (int i = 1; i <= numberOfFrames; i++)
+                        _f.ReadByte(); // frames
+                    break;
+                case 6: // 00000110 = EMBL lacing
+                    System.Diagnostics.Debug.Print("EBML lacing");
+                    numberOfFrames = (byte)_f.ReadByte();
+                    numberOfFrames++;
+                    break;
+            }
 
-                // lacing
-                byte flags = (byte)_f.ReadByte();
-                byte numberOfFrames = 0;
-                switch ((flags & 6))  // 6 = 00000110
+            // save subtitle data
+            if (trackNumber == _subtitleRipTrackNumber)
+            {
+                long sublength = afterPosition - _f.Position;
+                if (sublength > 0)
                 {
-                    case 0: System.Diagnostics.Debug.Print("No lacing");   // No lacing
-                        break;
-                    case 2: System.Diagnostics.Debug.Print("Xiph lacing"); // 2 = 00000010 = Xiph lacing
-                        numberOfFrames = (byte)_f.ReadByte();
-                        numberOfFrames++;
-                        break;
-                    case 4: System.Diagnostics.Debug.Print("fixed-size");  // 4 = 00000100 = Fixed-size lacing
-                        numberOfFrames = (byte)_f.ReadByte();
-                        numberOfFrames++;
-                        for (int i = 1; i <= numberOfFrames; i++)
-                            _f.ReadByte(); // frames
-                        break;
-                    case 6: System.Diagnostics.Debug.Print("EBML");        // 6 = 00000110 = EMBL
-                        numberOfFrames = (byte)_f.ReadByte();
-                        numberOfFrames++;
-                        break;
-                }
+                    byte[] buffer = new byte[sublength];
+                    _f.Read(buffer, 0, (int)sublength);
 
-                // save subtitle data
-                if (trackNo == _subtitleRipTrackNumber)
-                {
-                    long sublength = afterPosition - _f.Position;
-                    if (sublength > 0)
+                    //string s = GetMatroskaString(sublength);
+                    //s = s.Replace("\\N", Environment.NewLine);
+
+                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                    var duration = 0L;
+                    elementId = ReadEbmlId();
+                    if (elementId == ElementId.BlockDuration)
                     {
-                        byte[] buffer = new byte[sublength];
-                        _f.Read(buffer, 0, (int)sublength);
-
-                        //string s = GetMatroskaString(sublength);
-                        //s = s.Replace("\\N", Environment.NewLine);
-
-                        _f.Seek(afterPosition, SeekOrigin.Begin);
-                        b = (byte)_f.ReadByte();
-                        if (b == 0x9B) // BlockDuration
-                        {
-                            dataSize = (long)ReadVariableLengthUInt();
-                            duration = (long)ReadUInt((int)dataSize);
-                        }
-
-                        _subtitleRip.Add(new SubtitleSequence(buffer, timeCode + clusterTimeCode, timeCode + clusterTimeCode + duration));
+                        elementSize = (long)ReadVariableLengthUInt();
+                        duration = (long)ReadUInt((int)elementSize);
                     }
-                }
 
+                    _subtitleRip.Add(new SubtitleSequence(buffer, timeCode + clusterTimeCode, timeCode + clusterTimeCode + duration));
+                }
             }
         }
 
