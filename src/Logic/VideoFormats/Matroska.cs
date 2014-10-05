@@ -68,6 +68,16 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
             Tracks = 0x1654AE6B,
             TrackEntry = 0xAE,
+            TrackNumber = 0xD7,
+            TrackType = 0x83,
+            DefaultDuration = 0x23E383,
+            Name = 0x536E,
+            Language = 0x22B59C,
+            CodecId = 0x86,
+            CodecPrivate = 0x63A2,
+            Video = 0xE0,
+            Audio = 0xE1,
+            ContentEncodings = 0x6D80,
 
             Cluster = 0x1F43B675,
             Cues = 0x1C53BB6B,
@@ -252,68 +262,6 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
             return (clusterTimeCode + trackStartTime) * _timecodeScale / 1000000;
         }
 
-        private UInt32 GetMatroskaTracksId()
-        {
-            byte b = (byte)_f.ReadByte();
-
-            if (b == (uint)ElementId.Void ||
-                b == (uint)ElementId.Crc32 ||
-                b == (uint)ElementId.TrackEntry)
-                return b;
-
-            return 0;
-        }
-
-        private UInt32 GetMatroskaTrackEntryId()
-        {
-            UInt32 s = (UInt32)_f.ReadByte();
-
-            if (s == (uint)ElementId.Void ||
-                s == (uint)ElementId.Crc32 ||
-                s == 0xD7 || // Track number
-                s == 0x83 || // Track type
-                s == 0xB9 || // Flag enabled
-                s == 0x88 || // Flag default
-                s == 0x9C || // Flag lacing
-                s == 0x4F || // Track Time Code Scale
-                s == 0xAA || // CodecDecodeAll
-                s == 0xE0 || // Track Video
-                s == 0xE1 || // Track Audio
-                s == 0x86)   // Codec Id
-            {
-                return s;
-            }
-
-            s = s * 256 + (byte)_f.ReadByte();
-            if (s == 0x73C5 || // TrackUID
-                s == 0x55AA || // FlagForced
-                s == 0x6DE7 || // MinCache
-                s == 0x6DF8 || // MaxCache
-                s == 0x55EE || // MaxBlockAdditionID
-                s == 0x63A2 || // CodecPrivate
-                s == 0x7446 || // AttachmentLink
-                s == 0x6D80 || // ContentEncodings
-                s == 0x537F || // TrackOffset
-                s == 0x6FAB || // TrackOverlay
-                s == 0x536E || // Name
-                s == 0x6624 || // TrackTranslate
-                s == 0x66FC || // TrackTranslateEditionUID
-                s == 0x66BF || // TrackTranslateCodec
-                s == 0x66A5)   // TrackTranslateTrackID
-            {
-                return s;
-            }
-
-            s = s * 256 + (byte)_f.ReadByte();
-            if (s == 0x23E383 || // Default Duration
-                s == 0x22B59C || // Language
-                s == 0x258688 || // CodecName
-                s == 0x23314F)   // TrackTimeCodeScale
-                return s;
-
-            return 0;
-        }
-
         private UInt32 GetMatroskaTrackVideoId()
         {
             UInt32 s = (byte)_f.ReadByte();
@@ -407,7 +355,7 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
             while (_f.Position < _f.Length)
             {
-                var matroskaId = GetMatroskaTrackEntryId();
+                var matroskaId = ReadEbmlId();
                 if (matroskaId == 0)
                 {
                     break;
@@ -415,96 +363,81 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
                 var dataSize = (long)ReadVariableLengthUInt();
 
                 long afterPosition;
-                if (matroskaId == 0x23E383)// Default Duration
+                switch (matroskaId)
                 {
-                    afterPosition = _f.Position + dataSize;
+                    case ElementId.DefaultDuration:
+                        defaultDuration = (int)ReadUInt((int)dataSize);
+                        break;
+                    case ElementId.Video:
+                        afterPosition = _f.Position + dataSize;
+                        AnalyzeMatroskaTrackVideo(afterPosition);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        isVideo = true;
+                        break;
+                    case ElementId.Audio:
+                        afterPosition = _f.Position + dataSize;
+                        AnalyzeMatroskaTrackVideo(afterPosition);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        isAudio = true;
+                        break;
+                    case ElementId.TrackNumber:
+                        trackNumber = (long)ReadUInt((int)dataSize);
+                        break;
+                    case ElementId.Name:
+                        afterPosition = _f.Position + dataSize;
+                        name = GetMatroskaString(dataSize);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.Language:
+                        afterPosition = _f.Position + dataSize;
+                        language = GetMatroskaString(dataSize);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.CodecId:
+                        afterPosition = _f.Position + dataSize;
+                        codecId = GetMatroskaString(dataSize);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.TrackType:
+                        afterPosition = _f.Position + dataSize;
+                        if (dataSize == 1)
+                        {
+                            byte trackType = (byte)_f.ReadByte();
+                            if (trackType == 0x11) // subtitle
+                                isSubtitle = true;
+                            if (trackType == 1)
+                                isVideo = true;
+                            if (trackType == 2)
+                                isAudio = true;
+                        }
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.CodecPrivate:
+                        afterPosition = _f.Position + dataSize;
+                        codecPrivate = GetMatroskaString(dataSize);
+                        if (codecPrivate.Length > 20)
+                            biCompression = codecPrivate.Substring(16, 4);
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    case ElementId.ContentEncodings:
+                        afterPosition = _f.Position + dataSize;
 
-                    defaultDuration = (int)ReadUInt((int)dataSize);
+                        contentCompressionAlgorithm = 0; // default value
+                        contentEncodingType = 0; // default value
 
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0xE0)// Video settings
-                {
-                    afterPosition = _f.Position + dataSize;
-                    AnalyzeMatroskaTrackVideo(afterPosition);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                    isVideo = true;
-                }
-                else if (matroskaId == 0xE1)// Audio settings
-                {
-                    afterPosition = _f.Position + dataSize;
-                    AnalyzeMatroskaTrackVideo(afterPosition);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                    isAudio = true;
-                }
-                else if (matroskaId == 0xD7) // Track number
-                {
-                    afterPosition = _f.Position + dataSize;
-                    if (dataSize == 1)
-                    {
-                        trackNumber = (byte)_f.ReadByte();
-                    }
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0x536E) // Name
-                {
-                    afterPosition = _f.Position + dataSize;
-                    name = GetMatroskaString(dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0x22B59C) // Language
-                {
-                    afterPosition = _f.Position + dataSize;
-                    language = GetMatroskaString(dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0x86) // CodecId
-                {
-                    afterPosition = _f.Position + dataSize;
-                    codecId = GetMatroskaString(dataSize);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0x83) // Track type
-                {
-                    afterPosition = _f.Position + dataSize;
-                    if (dataSize == 1)
-                    {
-                        byte trackType = (byte)_f.ReadByte();
-                        if (trackType == 0x11) // subtitle
-                            isSubtitle = true;
-                        if (trackType == 1)
-                            isVideo = true;
-                        if (trackType == 2)
-                            isAudio = true;
-                    }
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0x63A2) // CodecPrivate
-                {
-                    afterPosition = _f.Position + dataSize;
-                    codecPrivate = GetMatroskaString(dataSize);
-                    if (codecPrivate.Length > 20)
-                        biCompression = codecPrivate.Substring(16, 4);
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
-                }
-                else if (matroskaId == 0x6D80) // ContentEncodings
-                {
-                    afterPosition = _f.Position + dataSize;
+                        int contentEncoding1 = _f.ReadByte();
+                        int contentEncoding2 = _f.ReadByte();
 
-                    contentCompressionAlgorithm = 0; // default value
-                    contentEncodingType = 0; // default value
-
-                    int contentEncoding1 = _f.ReadByte();
-                    int contentEncoding2 = _f.ReadByte();
-
-                    if (contentEncoding1 == 0x62 && contentEncoding2 == 0x40)
-                    {
-                        AnalyzeMatroskaContentEncoding(afterPosition, ref contentCompressionAlgorithm, ref contentEncodingType);
-                    }
-                    _f.Seek(afterPosition, SeekOrigin.Begin);
+                        if (contentEncoding1 == 0x62 && contentEncoding2 == 0x40)
+                        {
+                            AnalyzeMatroskaContentEncoding(afterPosition, ref contentCompressionAlgorithm, ref contentEncodingType);
+                        }
+                        _f.Seek(afterPosition, SeekOrigin.Begin);
+                        break;
+                    default:
+                        _f.Seek(dataSize, SeekOrigin.Current);
+                        break;
                 }
-                else
-                    _f.Seek(dataSize, SeekOrigin.Current);
             }
             if (_tracks != null)
             {
@@ -626,21 +559,23 @@ namespace Nikse.SubtitleEdit.Logic.VideoFormats
 
             while (_f.Position < _f.Length)
             {
-                var matroskaId = GetMatroskaTracksId();
+                var matroskaId = ReadEbmlId();
                 if (matroskaId == 0)
                 {
                     break;
                 }
                 var dataSize = (long)ReadVariableLengthUInt();
 
-                if (matroskaId == (uint)ElementId.TrackEntry)
+                if (matroskaId == ElementId.TrackEntry)
                 {
                     var afterPosition = _f.Position + dataSize;
                     AnalyzeMatroskaTrackEntry();
                     _f.Seek(afterPosition, SeekOrigin.Begin);
                 }
                 else
+                {
                     _f.Seek(dataSize, SeekOrigin.Current);
+                }
             }
         }
 
